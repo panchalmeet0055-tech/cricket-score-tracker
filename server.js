@@ -576,13 +576,9 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve index.html for all other routes (catch-all)
-app.use((req, res, next) => {
-  if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/captures') && !req.path.startsWith('/socket.io')) {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-  } else {
-    next();
-  }
+// Serve index.html for all other routes (catch-all for SPA)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Start server
