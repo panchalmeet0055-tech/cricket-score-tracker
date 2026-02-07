@@ -1,13 +1,17 @@
 {
   "name": "score-tracker",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Cricket Score Tracker with live streaming",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build": "npm rebuild better-sqlite3",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["cricket", "score", "tracker"],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
