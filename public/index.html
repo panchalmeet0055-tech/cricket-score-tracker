@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cricket Score Tracker</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav id="navbar" class="hidden">
+    <div class="nav-brand">Cricket Score Tracker</div>
+    <div class="nav-links">
+      <a href="#" data-page="dashboard" class="nav-link active">Dashboard</a>
+      <a href="#" data-page="live-stream" class="nav-link">Live Streams</a>
+      <a href="#" data-page="admin" class="nav-link admin-only hidden">Admin Panel</a>
+      <span id="user-info"></span>
+      <button id="logout-btn" class="btn btn-outline">Logout</button>
+    </div>
+  </nav>
+
+  <!-- Auth Page -->
+  <div id="auth-page" class="page">
+    <div class="auth-container">
+      <div class="auth-header">
+        <h1>Cricket Score Tracker</h1>
+        <p>Live scores and camera streams</p>
+      </div>
+      
+      <div class="auth-tabs">
+        <button class="tab-btn active" data-tab="login">Login</button>
+        <button class="tab-btn" data-tab="register">Register</button>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" class="auth-form">
+        <div class="form-group">
+          <label for="login-username">Username</label>
+          <input type="text" id="login-username" required minlength="3">
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" required minlength="4">
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Login</button>
+        <div id="login-error" class="error-message"></div>
+      </form>
+
+      <!-- Register Form -->
+      <form id="register-form" class="auth-form hidden">
+        <div class="form-group">
+          <label for="register-username">Username</label>
+          <input type="text" id="register-username" required minlength="3">
+        </div>
+        <div class="form-group">
+          <label for="register-password">Password</label>
+          <input type="password" id="register-password" required minlength="4">
+        </div>
+        <div class="form-group">
+          <label>Register as</label>
+          <div class="role-selector">
+            <label class="role-option">
+              <input type="radio" name="role" value="user" checked>
+              <span class="role-card">
+                <span class="role-icon">&#128100;</span>
+                <span class="role-title">User</span>
+                <span class="role-desc">View scores & streams</span>
+              </span>
+            </label>
+            <label class="role-option">
+              <input type="radio" name="role" value="admin">
+              <span class="role-card">
+                <span class="role-icon">&#128119;</span>
+                <span class="role-title">Admin</span>
+                <span class="role-desc">Manage scores & capture</span>
+              </span>
+            </label>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Register</button>
+        <div id="register-error" class="error-message"></div>
+        <div id="register-success" class="success-message"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard Page -->
+  <div id="dashboard-page" class="page hidden">
+    <div class="container">
+      <h2>Live Matches</h2>
+      <div id="matches-container" class="matches-grid">
+        <p class="loading">Loading matches...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Live Stream Page -->
+  <div id="live-stream-page" class="page hidden">
+    <div class="container">
+      <h2>Live Camera Streams</h2>
+      
+      <div class="streams-grid">
+        <!-- Raspberry Pi Camera -->
+        <div class="stream-card">
+          <div class="stream-header">
+            <h3>Raspberry Pi Camera</h3>
+            <span id="rpi-status" class="status-badge">Connecting...</span>
+          </div>
+          <div class="stream-container">
+            <img id="rpi-stream" class="stream-video" alt="Raspberry Pi Stream">
+            <div id="rpi-offline" class="stream-offline">
+              <span>Camera Offline</span>
+              <p>Check if Raspberry Pi is connected</p>
+            </div>
+          </div>
+          <div class="stream-controls admin-only hidden">
+            <button class="btn btn-capture" data-source="raspberry_pi" data-action="photo">
+              Capture Photo
+            </button>
+            <button class="btn btn-capture btn-record" data-source="raspberry_pi" data-action="video">
+              Start Recording
+            </button>
+          </div>
+        </div>
+
+        <!-- ESP32 Camera -->
+        <div class="stream-card">
+          <div class="stream-header">
+            <h3>ESP32-S3 XIAO Camera</h3>
+            <span id="esp32-status" class="status-badge">Connecting...</span>
+          </div>
+          <div class="stream-container">
+            <img id="esp32-stream" class="stream-video" alt="ESP32 Stream">
+            <div id="esp32-offline" class="stream-offline">
+              <span>Camera Offline</span>
+              <p>Check if ESP32 is connected</p>
+            </div>
+          </div>
+          <div class="stream-controls admin-only hidden">
+            <button class="btn btn-capture" data-source="esp32" data-action="photo">
+              Capture Photo
+            </button>
+            <button class="btn btn-capture btn-record" data-source="esp32" data-action="video">
+              Start Recording
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Camera Configuration (Admin Only) -->
+      <div id="camera-config-section" class="admin-only hidden">
+        <h3>Camera Configuration</h3>
+        <div class="config-grid">
+          <div class="config-card">
+            <h4>Raspberry Pi Stream URL</h4>
+            <input type="text" id="rpi-url" class="config-input" placeholder="http://raspberrypi.local:8080/stream">
+            <button class="btn btn-sm" onclick="updateCameraConfig('raspberryPi')">Update</button>
+          </div>
+          <div class="config-card">
+            <h4>ESP32 Stream URL</h4>
+            <input type="text" id="esp32-url" class="config-input" placeholder="http://esp32.local:81/stream">
+            <button class="btn btn-sm" onclick="updateCameraConfig('esp32')">Update</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Captures Gallery (visible to all users) -->
+      <div id="captures-section">
+        <h3>Captured Media</h3>
+        <div id="captures-gallery" class="captures-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Page -->
+  <div id="admin-page" class="page hidden">
+    <div class="container">
+      <h2>Admin Panel</h2>
+      
+      <!-- Create Match -->
+      <div class="admin-section">
+        <h3>Create New Match</h3>
+        <form id="create-match-form" class="match-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="team1-name">Team 1 Name</label>
+              <input type="text" id="team1-name" required>
+            </div>
+            <div class="form-group">
+              <label for="team2-name">Team 2 Name</label>
+              <input type="text" id="team2-name" required>
+            </div>
+            <div class="form-group">
+              <label for="match-status">Status</label>
+              <select id="match-status">
+                <option value="upcoming">Upcoming</option>
+                <option value="live">Live</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Create Match</button>
+        </form>
+      </div>
+
+      <!-- Manage Matches -->
+      <div class="admin-section">
+        <h3>Manage Matches</h3>
+        <div id="admin-matches-list" class="admin-matches"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Match Modal -->
+  <div id="edit-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Edit Match Score</h3>
+        <button class="modal-close" onclick="closeEditModal()">&times;</button>
+      </div>
+      <form id="edit-match-form">
+        <input type="hidden" id="edit-match-id">
+        
+        <div class="score-editor">
+          <div class="team-score-editor">
+            <h4 id="edit-team1-label">Team 1</h4>
+            <div class="score-inputs">
+              <div class="form-group">
+                <label>Runs</label>
+                <input type="number" id="edit-team1-score" min="0" value="0">
+              </div>
+              <div class="form-group">
+                <label>Wickets</label>
+                <input type="number" id="edit-team1-wickets" min="0" max="10" value="0">
+              </div>
+              <div class="form-group">
+                <label>Overs</label>
+                <input type="number" id="edit-team1-overs" min="0" step="0.1" value="0">
+              </div>
+            </div>
+          </div>
+          
+          <div class="team-score-editor">
+            <h4 id="edit-team2-label">Team 2</h4>
+            <div class="score-inputs">
+              <div class="form-group">
+                <label>Runs</label>
+                <input type="number" id="edit-team2-score" min="0" value="0">
+              </div>
+              <div class="form-group">
+                <label>Wickets</label>
+                <input type="number" id="edit-team2-wickets" min="0" max="10" value="0">
+              </div>
+              <div class="form-group">
+                <label>Overs</label>
+                <input type="number" id="edit-team2-overs" min="0" step="0.1" value="0">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Match Status</label>
+          <select id="edit-status">
+            <option value="upcoming">Upcoming</option>
+            <option value="live">Live</option>
+            <option value="completed">Completed</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Currently Batting</label>
+          <select id="edit-batting"></select>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeEditModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Quick Score Modal (for live scoring) -->
+  <div id="quick-score-modal" class="modal hidden">
+    <div class="modal-content quick-score-content">
+      <div class="modal-header">
+        <h3>Quick Score Update</h3>
+        <button class="modal-close" onclick="closeQuickScoreModal()">&times;</button>
+      </div>
+      <div class="quick-score-display">
+        <div id="quick-score-info"></div>
+      </div>
+      <div class="quick-score-buttons">
+        <button class="btn btn-score" onclick="quickScore(0)">Dot Ball</button>
+        <button class="btn btn-score" onclick="quickScore(1)">1 Run</button>
+        <button class="btn btn-score" onclick="quickScore(2)">2 Runs</button>
+        <button class="btn btn-score" onclick="quickScore(3)">3 Runs</button>
+        <button class="btn btn-score" onclick="quickScore(4)">4 Runs</button>
+        <button class="btn btn-score" onclick="quickScore(6)">6 Runs</button>
+        <button class="btn btn-score btn-wicket" onclick="quickScore(0, true)">Wicket!</button>
+      </div>
+      <button class="btn btn-outline btn-full" onclick="closeQuickScoreModal()">Close</button>
+    </div>
+  </div>
+
+  <!-- Media Preview Modal -->
+  <div id="preview-modal" class="modal hidden">
+    <div class="preview-overlay" onclick="closePreviewModal()"></div>
+    <div class="preview-container">
+      <button class="preview-close" onclick="closePreviewModal()">&times;</button>
+      <button class="preview-nav preview-prev" onclick="navigatePreview(-1)">&#10094;</button>
+      <div class="preview-content">
+        <img id="preview-image" class="preview-media hidden" alt="Preview">
+        <video id="preview-video" class="preview-media hidden" controls></video>
+      </div>
+      <button class="preview-nav preview-next" onclick="navigatePreview(1)">&#10095;</button>
+      <div class="preview-info">
+        <span id="preview-source"></span>
+        <span id="preview-date"></span>
+        <span id="preview-counter"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

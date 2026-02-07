@@ -1,0 +1,8 @@
+node_modules/
+cricket.db
+public/captures/*
+!public/captures/.gitkeep
+.env
+*.log
+.DS_Store
+Thumbs.db
