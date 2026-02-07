@@ -586,11 +586,12 @@ const PORT = process.env.PORT || 3000;
 
 console.log(`Starting Cricket Score Tracker...`);
 console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-console.log(`Port: ${PORT}`);
+console.log(`PORT env var: ${process.env.PORT || 'not set, using default 3000'}`);
+console.log(`Binding to port: ${PORT}`);
 
 initDatabase().then(() => {
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Cricket Score Tracker running on port ${PORT}`);
+    console.log(`Cricket Score Tracker running on http://0.0.0.0:${PORT}`);
     console.log(`Server is ready to accept connections`);
   });
 }).catch(err => {
