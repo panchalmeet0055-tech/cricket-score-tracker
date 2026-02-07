@@ -181,6 +181,10 @@ let cameraConfig = {
 };
 
 // AUTH ROUTES
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.post('/api/register', async (req, res) => {
   try {
     const { username, password, role } = req.body;
@@ -569,19 +573,37 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve index.html for all other routes
-app.get('/{*splat}', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// Serve index.html for all other routes (catch-all)
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/captures') && !req.path.startsWith('/socket.io')) {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  } else {
+    next();
+  }
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
 
+console.log(`Starting Cricket Score Tracker...`);
+console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`Port: ${PORT}`);
+
 initDatabase().then(() => {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Cricket Score Tracker running on port ${PORT}`);
+    console.log(`Server is ready to accept connections`);
   });
 }).catch(err => {
   console.error('Failed to initialize database:', err);
   process.exit(1);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
 });
