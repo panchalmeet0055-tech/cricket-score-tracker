@@ -3,7 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
-const Database = require('better-sqlite3');
+const initSqlJs = require('sql.js');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
@@ -12,48 +12,129 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Initialize SQLite database
-const db = new Database('cricket.db');
+// Database variables
+let db = null;
+const DB_PATH = path.join(__dirname, 'cricket.db');
 
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+// Helper functions for sql.js
+function dbRun(sql, params = []) {
+  try {
+    db.run(sql, params);
+    saveDatabase();
+    return { changes: db.getRowsModified() };
+  } catch (e) {
+    console.error('DB Run Error:', e);
+    throw e;
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS matches (
-    id TEXT PRIMARY KEY,
-    team1_name TEXT NOT NULL,
-    team2_name TEXT NOT NULL,
-    team1_score INTEGER DEFAULT 0,
-    team1_wickets INTEGER DEFAULT 0,
-    team1_overs REAL DEFAULT 0.0,
-    team2_score INTEGER DEFAULT 0,
-    team2_wickets INTEGER DEFAULT 0,
-    team2_overs REAL DEFAULT 0.0,
-    status TEXT DEFAULT 'upcoming' CHECK(status IN ('upcoming', 'live', 'completed')),
-    current_batting TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+function dbGet(sql, params = []) {
+  try {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return row;
+    }
+    stmt.free();
+    return null;
+  } catch (e) {
+    console.error('DB Get Error:', e);
+    return null;
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS captures (
-    id TEXT PRIMARY KEY,
-    filename TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('photo', 'video')),
-    source TEXT NOT NULL CHECK(source IN ('raspberry_pi', 'esp32')),
-    captured_by TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (captured_by) REFERENCES users(id)
-  );
-`);
+function dbAll(sql, params = []) {
+  try {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+  } catch (e) {
+    console.error('DB All Error:', e);
+    return [];
+  }
+}
+
+function saveDatabase() {
+  try {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  } catch (e) {
+    console.error('Save DB Error:', e);
+  }
+}
+
+// Initialize database
+async function initDatabase() {
+  const SQL = await initSqlJs();
+  
+  try {
+    if (fs.existsSync(DB_PATH)) {
+      const fileBuffer = fs.readFileSync(DB_PATH);
+      db = new SQL.Database(fileBuffer);
+      console.log('Database loaded from file');
+    } else {
+      db = new SQL.Database();
+      console.log('New database created');
+    }
+  } catch (e) {
+    console.log('Creating new database due to error:', e.message);
+    db = new SQL.Database();
+  }
+
+  // Create tables
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      role TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS matches (
+      id TEXT PRIMARY KEY,
+      team1_name TEXT NOT NULL,
+      team2_name TEXT NOT NULL,
+      team1_score INTEGER DEFAULT 0,
+      team1_wickets INTEGER DEFAULT 0,
+      team1_overs REAL DEFAULT 0.0,
+      team2_score INTEGER DEFAULT 0,
+      team2_wickets INTEGER DEFAULT 0,
+      team2_overs REAL DEFAULT 0.0,
+      status TEXT DEFAULT 'upcoming',
+      current_batting TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS captures (
+      id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      type TEXT NOT NULL,
+      source TEXT NOT NULL,
+      captured_by TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  saveDatabase();
+  console.log('Database initialized');
+}
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 app.use('/captures', express.static('public/captures'));
@@ -87,7 +168,7 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
-// Camera stream URLs (configure these based on your devices)
+// Camera stream URLs
 let cameraConfig = {
   raspberryPi: {
     url: 'http://raspberrypi.local:8080/stream',
@@ -120,16 +201,17 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 4 characters' });
     }
 
-    const existingUser = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+    const existingUser = dbGet('SELECT id FROM users WHERE username = ?', [username]);
     if (existingUser) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const id = uuidv4();
+    const now = new Date().toISOString();
 
-    db.prepare('INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)')
-      .run(id, username, hashedPassword, role);
+    dbRun('INSERT INTO users (id, username, password, role, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, username, hashedPassword, role, now]);
 
     res.json({ success: true, message: 'Registration successful' });
   } catch (error) {
@@ -146,7 +228,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    const user = dbGet('SELECT * FROM users WHERE username = ?', [username]);
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -187,12 +269,12 @@ app.get('/api/me', (req, res) => {
 
 // MATCH/SCORE ROUTES
 app.get('/api/matches', (req, res) => {
-  const matches = db.prepare('SELECT * FROM matches ORDER BY created_at DESC').all();
+  const matches = dbAll('SELECT * FROM matches ORDER BY created_at DESC');
   res.json(matches);
 });
 
 app.get('/api/matches/:id', (req, res) => {
-  const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(req.params.id);
+  const match = dbGet('SELECT * FROM matches WHERE id = ?', [req.params.id]);
   if (!match) {
     return res.status(404).json({ error: 'Match not found' });
   }
@@ -208,12 +290,14 @@ app.post('/api/matches', requireAdmin, (req, res) => {
     }
 
     const id = uuidv4();
-    db.prepare(`
-      INSERT INTO matches (id, team1_name, team2_name, status, current_batting)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, team1_name, team2_name, status, team1_name);
+    const now = new Date().toISOString();
+    
+    dbRun(`
+      INSERT INTO matches (id, team1_name, team2_name, status, current_batting, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [id, team1_name, team2_name, status, team1_name, now, now]);
 
-    const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
+    const match = dbGet('SELECT * FROM matches WHERE id = ?', [id]);
     
     io.emit('match:created', match);
     res.json(match);
@@ -228,7 +312,7 @@ app.put('/api/matches/:id', requireAdmin, (req, res) => {
     const { id } = req.params;
     const updates = req.body;
 
-    const existingMatch = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
+    const existingMatch = dbGet('SELECT * FROM matches WHERE id = ?', [id]);
     if (!existingMatch) {
       return res.status(404).json({ error: 'Match not found' });
     }
@@ -252,12 +336,13 @@ app.put('/api/matches/:id', requireAdmin, (req, res) => {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
-    setClauses.push('updated_at = CURRENT_TIMESTAMP');
+    setClauses.push('updated_at = ?');
+    values.push(new Date().toISOString());
     values.push(id);
 
-    db.prepare(`UPDATE matches SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+    dbRun(`UPDATE matches SET ${setClauses.join(', ')} WHERE id = ?`, values);
 
-    const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
+    const match = dbGet('SELECT * FROM matches WHERE id = ?', [id]);
     
     io.emit('match:updated', match);
     res.json(match);
@@ -271,7 +356,7 @@ app.delete('/api/matches/:id', requireAdmin, (req, res) => {
   try {
     const { id } = req.params;
     
-    const result = db.prepare('DELETE FROM matches WHERE id = ?').run(id);
+    const result = dbRun('DELETE FROM matches WHERE id = ?', [id]);
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Match not found' });
     }
@@ -284,7 +369,7 @@ app.delete('/api/matches/:id', requireAdmin, (req, res) => {
   }
 });
 
-// STREAM PROXY ROUTES (to bypass CORS)
+// STREAM PROXY ROUTES
 app.get('/api/stream/:camera', requireAuth, (req, res) => {
   const { camera } = req.params;
   
@@ -297,7 +382,6 @@ app.get('/api/stream/:camera', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Camera not found or disabled' });
   }
 
-  // Proxy the MJPEG stream
   const proxyReq = http.request(streamUrl, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, {
       'Content-Type': proxyRes.headers['content-type'] || 'multipart/x-mixed-replace; boundary=frame',
@@ -321,16 +405,14 @@ app.get('/api/stream/:camera', requireAuth, (req, res) => {
   proxyReq.end();
 });
 
-// Single frame capture from camera (for photo capture)
+// Single frame capture
 app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
   const { camera } = req.params;
   
   let snapshotUrl;
   if (camera === 'esp32' && cameraConfig.esp32.enabled) {
-    // ESP32 CameraWebServer: stream is at :81/stream, capture is at port 80 /capture
     try {
       const streamUrl = new URL(cameraConfig.esp32.url);
-      // Capture endpoint is on port 80, not 81
       snapshotUrl = `${streamUrl.protocol}//${streamUrl.hostname}/capture`;
     } catch (e) {
       snapshotUrl = 'http://192.168.1.9/capture';
@@ -340,8 +422,6 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
   } else {
     return res.status(404).json({ error: 'Camera not found or disabled' });
   }
-
-  console.log(`Fetching snapshot from: ${snapshotUrl}`);
 
   try {
     const proxyReq = http.request(snapshotUrl, (proxyRes) => {
@@ -353,7 +433,6 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
     });
 
     proxyReq.on('error', (err) => {
-      console.error(`Snapshot error for ${camera}:`, err.message);
       if (!res.headersSent) {
         res.status(503).json({ error: 'Camera snapshot unavailable' });
       }
@@ -398,15 +477,15 @@ app.post('/api/capture', requireAdmin, (req, res) => {
     const filename = `${source}_${Date.now()}.${extension}`;
     const filepath = path.join(__dirname, 'public', 'captures', filename);
 
-    // Decode base64 and save
     const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '')
                                 .replace(/^data:video\/\w+;base64,/, '');
     fs.writeFileSync(filepath, Buffer.from(base64Data, 'base64'));
 
-    db.prepare(`
-      INSERT INTO captures (id, filename, type, source, captured_by)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, filename, type, source, req.session.user.id);
+    const now = new Date().toISOString();
+    dbRun(`
+      INSERT INTO captures (id, filename, type, source, captured_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [id, filename, type, source, req.session.user.id, now]);
 
     res.json({ 
       success: true, 
@@ -419,12 +498,12 @@ app.post('/api/capture', requireAdmin, (req, res) => {
 });
 
 app.get('/api/captures', requireAuth, (req, res) => {
-  const captures = db.prepare(`
+  const captures = dbAll(`
     SELECT c.*, u.username as captured_by_username 
     FROM captures c 
-    JOIN users u ON c.captured_by = u.id 
+    LEFT JOIN users u ON c.captured_by = u.id 
     ORDER BY c.created_at DESC
-  `).all();
+  `);
   res.json(captures);
 });
 
@@ -432,20 +511,17 @@ app.delete('/api/captures/:id', requireAdmin, (req, res) => {
   try {
     const { id } = req.params;
     
-    // Get capture info first
-    const capture = db.prepare('SELECT * FROM captures WHERE id = ?').get(id);
+    const capture = dbGet('SELECT * FROM captures WHERE id = ?', [id]);
     if (!capture) {
       return res.status(404).json({ error: 'Capture not found' });
     }
     
-    // Delete file
     const filepath = path.join(__dirname, 'public', 'captures', capture.filename);
     if (fs.existsSync(filepath)) {
       fs.unlinkSync(filepath);
     }
     
-    // Delete from database
-    db.prepare('DELETE FROM captures WHERE id = ?').run(id);
+    dbRun('DELETE FROM captures WHERE id = ?', [id]);
     
     res.json({ success: true });
   } catch (error) {
@@ -459,11 +535,9 @@ io.on('connection', (socket) => {
   const session = socket.request.session;
   console.log('Client connected:', socket.id);
 
-  // Send current matches on connect
-  const matches = db.prepare('SELECT * FROM matches ORDER BY created_at DESC').all();
+  const matches = dbAll('SELECT * FROM matches ORDER BY created_at DESC');
   socket.emit('matches:init', matches);
 
-  // Quick score update (for admin live scoring)
   socket.on('score:quick-update', (data) => {
     if (!session.user || session.user.role !== 'admin') {
       return socket.emit('error', { message: 'Unauthorized' });
@@ -471,7 +545,7 @@ io.on('connection', (socket) => {
 
     const { matchId, team, runs, wicket } = data;
     
-    const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
+    const match = dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
     if (!match) return;
 
     const scoreField = team === 'team1' ? 'team1_score' : 'team2_score';
@@ -480,13 +554,13 @@ io.on('connection', (socket) => {
     const newScore = match[scoreField] + (runs || 0);
     const newWickets = Math.min(10, match[wicketField] + (wicket ? 1 : 0));
 
-    db.prepare(`
+    dbRun(`
       UPDATE matches 
-      SET ${scoreField} = ?, ${wicketField} = ?, updated_at = CURRENT_TIMESTAMP 
+      SET ${scoreField} = ?, ${wicketField} = ?, updated_at = ? 
       WHERE id = ?
-    `).run(newScore, newWickets, matchId);
+    `, [newScore, newWickets, new Date().toISOString(), matchId]);
 
-    const updatedMatch = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
+    const updatedMatch = dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
     io.emit('match:updated', updatedMatch);
   });
 
@@ -495,12 +569,19 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve index.html for all other routes (SPA support)
+// Serve index.html for all other routes
 app.get('/{*splat}', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Cricket Score Tracker running on port ${PORT}`);
+
+initDatabase().then(() => {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Cricket Score Tracker running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });

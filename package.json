@@ -5,22 +5,25 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build": "npm rebuild better-sqlite3",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": ["cricket", "score", "tracker"],
+  "keywords": [
+    "cricket",
+    "score",
+    "tracker"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.6.2",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "socket.io": "^4.8.3",
+    "sql.js": "^1.13.0",
     "uuid": "^13.0.0"
   }
 }
