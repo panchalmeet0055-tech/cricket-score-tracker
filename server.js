@@ -73,7 +73,10 @@ function saveDatabase() {
 
 // Initialize database
 async function initDatabase() {
-  const SQL = await initSqlJs();
+  // Configure sql.js to find the WASM file in node_modules
+  const SQL = await initSqlJs({
+    locateFile: file => path.join(__dirname, 'node_modules', 'sql.js', 'dist', file)
+  });
   
   try {
     if (fs.existsSync(DB_PATH)) {
