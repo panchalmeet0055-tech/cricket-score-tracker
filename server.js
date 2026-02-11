@@ -20,10 +20,11 @@ const DB_PATH = path.join(__dirname, 'cricket.db');
 function dbRun(sql, params = []) {
   try {
     db.run(sql, params);
+    const changes = db.getRowsModified();
     saveDatabase();
-    return { changes: db.getRowsModified() };
+    return { changes };
   } catch (e) {
-    console.error('DB Run Error:', e);
+    console.error('DB Run Error:', e.message, 'SQL:', sql);
     throw e;
   }
 }
@@ -129,6 +130,36 @@ async function initDatabase() {
       source TEXT NOT NULL,
       captured_by TEXT NOT NULL,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS scorecard_batsmen (
+      id TEXT PRIMARY KEY,
+      match_id TEXT NOT NULL,
+      team_name TEXT NOT NULL,
+      player_name TEXT NOT NULL,
+      runs INTEGER DEFAULT 0,
+      balls INTEGER DEFAULT 0,
+      fours INTEGER DEFAULT 0,
+      sixes INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'yet_to_bat',
+      dismissal_info TEXT DEFAULT '',
+      batting_position INTEGER DEFAULT 0
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS scorecard_bowlers (
+      id TEXT PRIMARY KEY,
+      match_id TEXT NOT NULL,
+      team_name TEXT NOT NULL,
+      player_name TEXT NOT NULL,
+      overs REAL DEFAULT 0,
+      maidens INTEGER DEFAULT 0,
+      runs_conceded INTEGER DEFAULT 0,
+      wickets INTEGER DEFAULT 0,
+      bowling_position INTEGER DEFAULT 0
     )
   `);
 
@@ -368,6 +399,15 @@ app.delete('/api/matches/:id', requireAdmin, (req, res) => {
       return res.status(404).json({ error: 'Match not found' });
     }
 
+    // Clean up scorecard data - use db.run directly to avoid multiple saves
+    try {
+      db.run('DELETE FROM scorecard_batsmen WHERE match_id = ?', [id]);
+      db.run('DELETE FROM scorecard_bowlers WHERE match_id = ?', [id]);
+      saveDatabase();
+    } catch (e) {
+      console.error('Scorecard cleanup error (non-fatal):', e.message);
+    }
+
     io.emit('match:deleted', { id });
     res.json({ success: true });
   } catch (error) {
@@ -534,6 +574,231 @@ app.delete('/api/captures/:id', requireAdmin, (req, res) => {
   } catch (error) {
     console.error('Delete capture error:', error);
     res.status(500).json({ error: 'Failed to delete capture' });
+  }
+});
+
+// SCORECARD ROUTES
+
+// Get full scorecard for a match
+app.get('/api/matches/:id/scorecard', (req, res) => {
+  try {
+    const { id } = req.params;
+    const match = dbGet('SELECT * FROM matches WHERE id = ?', [id]);
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found' });
+    }
+
+    const team1Batsmen = dbAll(
+      'SELECT * FROM scorecard_batsmen WHERE match_id = ? AND team_name = ? ORDER BY batting_position ASC',
+      [id, match.team1_name]
+    );
+    const team2Batsmen = dbAll(
+      'SELECT * FROM scorecard_batsmen WHERE match_id = ? AND team_name = ? ORDER BY batting_position ASC',
+      [id, match.team2_name]
+    );
+    const team1Bowlers = dbAll(
+      'SELECT * FROM scorecard_bowlers WHERE match_id = ? AND team_name = ? ORDER BY bowling_position ASC',
+      [id, match.team1_name]
+    );
+    const team2Bowlers = dbAll(
+      'SELECT * FROM scorecard_bowlers WHERE match_id = ? AND team_name = ? ORDER BY bowling_position ASC',
+      [id, match.team2_name]
+    );
+
+    res.json({
+      match,
+      team1: {
+        name: match.team1_name,
+        batsmen: team1Batsmen,
+        bowlers: team1Bowlers
+      },
+      team2: {
+        name: match.team2_name,
+        batsmen: team2Batsmen,
+        bowlers: team2Bowlers
+      }
+    });
+  } catch (error) {
+    console.error('Get scorecard error:', error);
+    res.status(500).json({ error: 'Failed to get scorecard' });
+  }
+});
+
+// Add batsman
+app.post('/api/matches/:id/scorecard/batsman', requireAdmin, (req, res) => {
+  try {
+    const { id: matchId } = req.params;
+    const { team_name, player_name, runs, balls, fours, sixes, status, dismissal_info, batting_position } = req.body;
+
+    if (!team_name || !player_name) {
+      return res.status(400).json({ error: 'Team name and player name are required' });
+    }
+
+    const match = dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found' });
+    }
+
+    const id = uuidv4();
+    const pos = batting_position || (dbAll(
+      'SELECT * FROM scorecard_batsmen WHERE match_id = ? AND team_name = ?',
+      [matchId, team_name]
+    ).length + 1);
+
+    dbRun(`
+      INSERT INTO scorecard_batsmen (id, match_id, team_name, player_name, runs, balls, fours, sixes, status, dismissal_info, batting_position)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, matchId, team_name, player_name, runs || 0, balls || 0, fours || 0, sixes || 0, status || 'yet_to_bat', dismissal_info || '', pos]);
+
+    const batsman = dbGet('SELECT * FROM scorecard_batsmen WHERE id = ?', [id]);
+    io.emit('scorecard:updated', { matchId });
+    res.json(batsman);
+  } catch (error) {
+    console.error('Add batsman error:', error);
+    res.status(500).json({ error: 'Failed to add batsman' });
+  }
+});
+
+// Update batsman
+app.put('/api/matches/:id/scorecard/batsman/:batsmanId', requireAdmin, (req, res) => {
+  try {
+    const { batsmanId } = req.params;
+    const updates = req.body;
+
+    const existing = dbGet('SELECT * FROM scorecard_batsmen WHERE id = ?', [batsmanId]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Batsman not found' });
+    }
+
+    const allowedFields = ['player_name', 'runs', 'balls', 'fours', 'sixes', 'status', 'dismissal_info', 'batting_position'];
+    const setClauses = [];
+    const values = [];
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        setClauses.push(`${field} = ?`);
+        values.push(updates[field]);
+      }
+    }
+
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    values.push(batsmanId);
+    dbRun(`UPDATE scorecard_batsmen SET ${setClauses.join(', ')} WHERE id = ?`, values);
+
+    const batsman = dbGet('SELECT * FROM scorecard_batsmen WHERE id = ?', [batsmanId]);
+    io.emit('scorecard:updated', { matchId: req.params.id });
+    res.json(batsman);
+  } catch (error) {
+    console.error('Update batsman error:', error);
+    res.status(500).json({ error: 'Failed to update batsman' });
+  }
+});
+
+// Delete batsman
+app.delete('/api/matches/:id/scorecard/batsman/:batsmanId', requireAdmin, (req, res) => {
+  try {
+    const { batsmanId } = req.params;
+    const result = dbRun('DELETE FROM scorecard_batsmen WHERE id = ?', [batsmanId]);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Batsman not found' });
+    }
+    io.emit('scorecard:updated', { matchId: req.params.id });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete batsman error:', error);
+    res.status(500).json({ error: 'Failed to delete batsman' });
+  }
+});
+
+// Add bowler
+app.post('/api/matches/:id/scorecard/bowler', requireAdmin, (req, res) => {
+  try {
+    const { id: matchId } = req.params;
+    const { team_name, player_name, overs, maidens, runs_conceded, wickets, bowling_position } = req.body;
+
+    if (!team_name || !player_name) {
+      return res.status(400).json({ error: 'Team name and player name are required' });
+    }
+
+    const match = dbGet('SELECT * FROM matches WHERE id = ?', [matchId]);
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found' });
+    }
+
+    const id = uuidv4();
+    const pos = bowling_position || (dbAll(
+      'SELECT * FROM scorecard_bowlers WHERE match_id = ? AND team_name = ?',
+      [matchId, team_name]
+    ).length + 1);
+
+    dbRun(`
+      INSERT INTO scorecard_bowlers (id, match_id, team_name, player_name, overs, maidens, runs_conceded, wickets, bowling_position)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, matchId, team_name, player_name, overs || 0, maidens || 0, runs_conceded || 0, wickets || 0, pos]);
+
+    const bowler = dbGet('SELECT * FROM scorecard_bowlers WHERE id = ?', [id]);
+    io.emit('scorecard:updated', { matchId });
+    res.json(bowler);
+  } catch (error) {
+    console.error('Add bowler error:', error);
+    res.status(500).json({ error: 'Failed to add bowler' });
+  }
+});
+
+// Update bowler
+app.put('/api/matches/:id/scorecard/bowler/:bowlerId', requireAdmin, (req, res) => {
+  try {
+    const { bowlerId } = req.params;
+    const updates = req.body;
+
+    const existing = dbGet('SELECT * FROM scorecard_bowlers WHERE id = ?', [bowlerId]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Bowler not found' });
+    }
+
+    const allowedFields = ['player_name', 'overs', 'maidens', 'runs_conceded', 'wickets', 'bowling_position'];
+    const setClauses = [];
+    const values = [];
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        setClauses.push(`${field} = ?`);
+        values.push(updates[field]);
+      }
+    }
+
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    values.push(bowlerId);
+    dbRun(`UPDATE scorecard_bowlers SET ${setClauses.join(', ')} WHERE id = ?`, values);
+
+    const bowler = dbGet('SELECT * FROM scorecard_bowlers WHERE id = ?', [bowlerId]);
+    io.emit('scorecard:updated', { matchId: req.params.id });
+    res.json(bowler);
+  } catch (error) {
+    console.error('Update bowler error:', error);
+    res.status(500).json({ error: 'Failed to update bowler' });
+  }
+});
+
+// Delete bowler
+app.delete('/api/matches/:id/scorecard/bowler/:bowlerId', requireAdmin, (req, res) => {
+  try {
+    const { bowlerId } = req.params;
+    const result = dbRun('DELETE FROM scorecard_bowlers WHERE id = ?', [bowlerId]);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Bowler not found' });
+    }
+    io.emit('scorecard:updated', { matchId: req.params.id });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete bowler error:', error);
+    res.status(500).json({ error: 'Failed to delete bowler' });
   }
 });
 

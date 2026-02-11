@@ -7,6 +7,11 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let capturesList = [];
 let currentPreviewIndex = 0;
+let currentScorecardMatchId = null;
+let currentScorecardTab = 'team1';
+let currentAdminScorecardMatchId = null;
+let currentAdminScorecardTab = 'team1';
+let scorecardData = null;
 
 // Socket.IO connection
 const socket = io();
@@ -112,6 +117,9 @@ function setupEventListeners() {
       
       if (res.ok) {
         currentUser = data.user;
+        // Reconnect socket so it picks up the authenticated session
+        socket.disconnect();
+        socket.connect();
         showApp();
       } else {
         errorEl.textContent = data.error;
@@ -278,6 +286,16 @@ function setupSocketListeners() {
     cameraConfig = config;
     updateCameraStreams();
   });
+
+  socket.on('scorecard:updated', async (data) => {
+    // Refresh scorecard if viewing this match
+    if (currentScorecardMatchId && currentScorecardMatchId === data.matchId) {
+      await loadScorecardView(data.matchId);
+    }
+    if (currentAdminScorecardMatchId && currentAdminScorecardMatchId === data.matchId) {
+      await loadAdminScorecard(data.matchId);
+    }
+  });
 }
 
 // Show page
@@ -352,8 +370,17 @@ function renderMatches() {
           <button class="btn btn-primary btn-sm" onclick="openQuickScoreModal('${match.id}')">
             Quick Score
           </button>
+          <button class="btn btn-outline btn-sm" onclick="openScorecardModal('${match.id}')">
+            Scorecard
+          </button>
         </div>
-      ` : ''}
+      ` : `
+        <div class="match-actions">
+          <button class="btn btn-outline btn-sm" onclick="openScorecardModal('${match.id}')">
+            View Scorecard
+          </button>
+        </div>
+      `}
     </div>
   `).join('');
 }
@@ -376,6 +403,7 @@ function renderAdminMatches() {
       <div class="admin-match-actions">
         <button class="btn btn-sm btn-primary" onclick="openEditModal('${match.id}')">Edit</button>
         <button class="btn btn-sm btn-success" onclick="openQuickScoreModal('${match.id}')">Live Score</button>
+        <button class="btn btn-sm btn-outline" onclick="openAdminScorecardModal('${match.id}')">Scorecard</button>
         <button class="btn btn-sm btn-danger" onclick="deleteMatch('${match.id}')">Delete</button>
       </div>
     </div>
@@ -465,9 +493,14 @@ async function deleteMatch(id) {
   if (!confirm('Are you sure you want to delete this match?')) return;
   
   try {
-    await fetch(`/api/matches/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/matches/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(data.error || 'Failed to delete match');
+    }
   } catch (error) {
     console.error('Failed to delete match:', error);
+    alert('Failed to delete match. Server may be unavailable.');
   }
 }
 
@@ -837,6 +870,448 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// ============ SCORECARD FUNCTIONS ============
+
+// View Scorecard Modal (for all users)
+async function openScorecardModal(matchId) {
+  currentScorecardMatchId = matchId;
+  currentScorecardTab = 'team1';
+  
+  const match = matches.find(m => m.id === matchId);
+  if (!match) return;
+
+  // Update tab labels
+  const tabs = document.querySelectorAll('#scorecard-modal .scorecard-tab');
+  tabs[0].textContent = match.team1_name;
+  tabs[0].dataset.team = 'team1';
+  tabs[0].classList.add('active');
+  tabs[1].textContent = match.team2_name;
+  tabs[1].dataset.team = 'team2';
+  tabs[1].classList.remove('active');
+
+  document.getElementById('scorecard-modal').classList.remove('hidden');
+  await loadScorecardView(matchId);
+}
+
+function closeScorecardModal() {
+  currentScorecardMatchId = null;
+  scorecardData = null;
+  document.getElementById('scorecard-modal').classList.add('hidden');
+}
+
+function switchScorecardTab(team) {
+  currentScorecardTab = team;
+  const tabs = document.querySelectorAll('#scorecard-modal .scorecard-tab');
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.team === team));
+  renderScorecardView();
+}
+
+async function loadScorecardView(matchId) {
+  try {
+    const res = await fetch(`/api/matches/${matchId}/scorecard`);
+    if (res.ok) {
+      scorecardData = await res.json();
+      renderScorecardView();
+    }
+  } catch (error) {
+    console.error('Failed to load scorecard:', error);
+  }
+}
+
+function renderScorecardView() {
+  const container = document.getElementById('scorecard-content');
+  if (!scorecardData) {
+    container.innerHTML = '<p class="loading">No scorecard data</p>';
+    return;
+  }
+
+  const teamData = currentScorecardTab === 'team1' ? scorecardData.team1 : scorecardData.team2;
+  const opposingTeamData = currentScorecardTab === 'team1' ? scorecardData.team2 : scorecardData.team1;
+
+  const activeBatsmen = teamData.batsmen.filter(b => b.status !== 'yet_to_bat');
+  const yetToBat = teamData.batsmen.filter(b => b.status === 'yet_to_bat');
+  
+  // Bowlers from opposing team bowling to this team
+  const bowlers = opposingTeamData.bowlers;
+
+  let html = '';
+
+  // Batting section
+  html += '<div class="scorecard-section">';
+  html += '<h4 class="scorecard-section-title">Batting</h4>';
+  if (activeBatsmen.length > 0) {
+    html += '<div class="scorecard-table-wrapper"><table class="scorecard-table">';
+    html += '<thead><tr><th class="sc-player">Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>S/R</th></tr></thead>';
+    html += '<tbody>';
+    activeBatsmen.forEach(b => {
+      const sr = b.balls > 0 ? ((b.runs / b.balls) * 100).toFixed(2) : '0.00';
+      const statusClass = b.status === 'not_out' || b.status === 'batting' ? 'sc-not-out' : '';
+      html += `<tr class="${statusClass}">
+        <td class="sc-player">
+          <div class="sc-player-name">${escapeHtml(b.player_name)}${b.status === 'batting' ? ' *' : ''}</div>
+          <div class="sc-dismissal">${b.status === 'out' ? escapeHtml(b.dismissal_info || 'out') : (b.status === 'not_out' || b.status === 'batting' ? 'not out' : '')}</div>
+        </td>
+        <td class="sc-bold">${b.runs}</td>
+        <td>${b.balls}</td>
+        <td>${b.fours}</td>
+        <td>${b.sixes}</td>
+        <td>${sr}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<p class="sc-empty">No batting data yet</p>';
+  }
+
+  // Extras & Total
+  const match = scorecardData.match;
+  if (currentScorecardTab === 'team1') {
+    html += `<div class="sc-total">
+      <span>Total</span>
+      <span class="sc-total-score">${match.team1_score}/${match.team1_wickets} <small>(${match.team1_overs} ov)</small></span>
+    </div>`;
+  } else {
+    html += `<div class="sc-total">
+      <span>Total</span>
+      <span class="sc-total-score">${match.team2_score}/${match.team2_wickets} <small>(${match.team2_overs} ov)</small></span>
+    </div>`;
+  }
+
+  // Yet to bat
+  if (yetToBat.length > 0) {
+    html += '<div class="sc-yet-to-bat">';
+    html += '<h5>Yet to bat</h5>';
+    html += '<p>' + yetToBat.map(b => escapeHtml(b.player_name)).join(' &middot; ') + '</p>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Bowling section
+  html += '<div class="scorecard-section">';
+  html += '<h4 class="scorecard-section-title">Bowling</h4>';
+  if (bowlers.length > 0) {
+    html += '<div class="scorecard-table-wrapper"><table class="scorecard-table">';
+    html += '<thead><tr><th class="sc-player">Bowler</th><th>O</th><th>M</th><th>R</th><th>W</th><th>Econ</th></tr></thead>';
+    html += '<tbody>';
+    bowlers.forEach(b => {
+      const econ = b.overs > 0 ? (b.runs_conceded / b.overs).toFixed(2) : '0.00';
+      html += `<tr>
+        <td class="sc-player"><div class="sc-player-name">${escapeHtml(b.player_name)}</div></td>
+        <td>${b.overs}</td>
+        <td>${b.maidens}</td>
+        <td>${b.runs_conceded}</td>
+        <td class="sc-bold">${b.wickets}</td>
+        <td>${econ}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<p class="sc-empty">No bowling data yet</p>';
+  }
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+// ============ ADMIN SCORECARD MANAGEMENT ============
+
+async function openAdminScorecardModal(matchId) {
+  currentAdminScorecardMatchId = matchId;
+  currentAdminScorecardTab = 'team1';
+  
+  const match = matches.find(m => m.id === matchId);
+  if (!match) return;
+
+  // Update tab labels
+  const tabs = document.querySelectorAll('#admin-scorecard-modal .scorecard-tab');
+  tabs[0].textContent = match.team1_name;
+  tabs[0].dataset.team = 'team1';
+  tabs[0].classList.add('active');
+  tabs[1].textContent = match.team2_name;
+  tabs[1].dataset.team = 'team2';
+  tabs[1].classList.remove('active');
+
+  document.getElementById('admin-scorecard-modal').classList.remove('hidden');
+  await loadAdminScorecard(matchId);
+}
+
+function closeAdminScorecardModal() {
+  currentAdminScorecardMatchId = null;
+  scorecardData = null;
+  cancelBatsmanForm();
+  cancelBowlerForm();
+  document.getElementById('admin-scorecard-modal').classList.add('hidden');
+}
+
+function switchAdminScorecardTab(team) {
+  currentAdminScorecardTab = team;
+  const tabs = document.querySelectorAll('#admin-scorecard-modal .scorecard-tab');
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.team === team));
+  cancelBatsmanForm();
+  cancelBowlerForm();
+  renderAdminScorecard();
+}
+
+async function loadAdminScorecard(matchId) {
+  try {
+    const res = await fetch(`/api/matches/${matchId}/scorecard`);
+    if (res.ok) {
+      scorecardData = await res.json();
+      renderAdminScorecard();
+    }
+  } catch (error) {
+    console.error('Failed to load scorecard:', error);
+  }
+}
+
+function renderAdminScorecard() {
+  if (!scorecardData) return;
+
+  const teamData = currentAdminScorecardTab === 'team1' ? scorecardData.team1 : scorecardData.team2;
+  const opposingTeamData = currentAdminScorecardTab === 'team1' ? scorecardData.team2 : scorecardData.team1;
+  const batsmen = teamData.batsmen;
+  const bowlers = opposingTeamData.bowlers;
+
+  // Render batsmen list
+  const batsmenContainer = document.getElementById('admin-batsmen-list');
+  if (batsmen.length > 0) {
+    let html = '<div class="scorecard-table-wrapper"><table class="scorecard-table">';
+    html += '<thead><tr><th class="sc-player">Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>Status</th><th>Actions</th></tr></thead>';
+    html += '<tbody>';
+    batsmen.forEach(b => {
+      html += `<tr>
+        <td class="sc-player">
+          <div class="sc-player-name">${escapeHtml(b.player_name)}</div>
+          <div class="sc-dismissal">${escapeHtml(b.dismissal_info || '')}</div>
+        </td>
+        <td>${b.runs}</td>
+        <td>${b.balls}</td>
+        <td>${b.fours}</td>
+        <td>${b.sixes}</td>
+        <td><span class="sc-status-badge sc-status-${b.status}">${b.status.replace('_', ' ')}</span></td>
+        <td class="sc-actions">
+          <button class="btn-icon" onclick="editBatsman('${b.id}')" title="Edit">&#9998;</button>
+          <button class="btn-icon btn-icon-danger" onclick="deleteBatsman('${b.id}')" title="Delete">&#10006;</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    batsmenContainer.innerHTML = html;
+  } else {
+    batsmenContainer.innerHTML = '<p class="sc-empty">No batsmen added yet</p>';
+  }
+
+  // Render bowlers list
+  const bowlersContainer = document.getElementById('admin-bowlers-list');
+  if (bowlers.length > 0) {
+    let html = '<div class="scorecard-table-wrapper"><table class="scorecard-table">';
+    html += '<thead><tr><th class="sc-player">Bowler</th><th>O</th><th>M</th><th>R</th><th>W</th><th>Actions</th></tr></thead>';
+    html += '<tbody>';
+    bowlers.forEach(b => {
+      html += `<tr>
+        <td class="sc-player"><div class="sc-player-name">${escapeHtml(b.player_name)}</div></td>
+        <td>${b.overs}</td>
+        <td>${b.maidens}</td>
+        <td>${b.runs_conceded}</td>
+        <td class="sc-bold">${b.wickets}</td>
+        <td class="sc-actions">
+          <button class="btn-icon" onclick="editBowler('${b.id}')" title="Edit">&#9998;</button>
+          <button class="btn-icon btn-icon-danger" onclick="deleteBowler('${b.id}')" title="Delete">&#10006;</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    bowlersContainer.innerHTML = html;
+  } else {
+    bowlersContainer.innerHTML = '<p class="sc-empty">No bowlers added yet</p>';
+  }
+}
+
+// Batsman form
+function openAddBatsmanForm() {
+  document.getElementById('batsman-edit-id').value = '';
+  document.getElementById('batsman-name').value = '';
+  document.getElementById('batsman-runs').value = '0';
+  document.getElementById('batsman-balls').value = '0';
+  document.getElementById('batsman-fours').value = '0';
+  document.getElementById('batsman-sixes').value = '0';
+  document.getElementById('batsman-status').value = 'yet_to_bat';
+  document.getElementById('batsman-dismissal').value = '';
+  document.getElementById('batsman-form-container').classList.remove('hidden');
+}
+
+function cancelBatsmanForm() {
+  document.getElementById('batsman-form-container').classList.add('hidden');
+}
+
+function editBatsman(batsmanId) {
+  if (!scorecardData) return;
+  
+  const teamData = currentAdminScorecardTab === 'team1' ? scorecardData.team1 : scorecardData.team2;
+  const batsman = teamData.batsmen.find(b => b.id === batsmanId);
+  if (!batsman) return;
+
+  document.getElementById('batsman-edit-id').value = batsman.id;
+  document.getElementById('batsman-name').value = batsman.player_name;
+  document.getElementById('batsman-runs').value = batsman.runs;
+  document.getElementById('batsman-balls').value = batsman.balls;
+  document.getElementById('batsman-fours').value = batsman.fours;
+  document.getElementById('batsman-sixes').value = batsman.sixes;
+  document.getElementById('batsman-status').value = batsman.status;
+  document.getElementById('batsman-dismissal').value = batsman.dismissal_info || '';
+  document.getElementById('batsman-form-container').classList.remove('hidden');
+}
+
+async function saveBatsman(e) {
+  e.preventDefault();
+  if (!currentAdminScorecardMatchId) return;
+
+  const editId = document.getElementById('batsman-edit-id').value;
+  const match = matches.find(m => m.id === currentAdminScorecardMatchId);
+  if (!match) return;
+
+  const teamName = currentAdminScorecardTab === 'team1' ? match.team1_name : match.team2_name;
+  const data = {
+    team_name: teamName,
+    player_name: document.getElementById('batsman-name').value,
+    runs: parseInt(document.getElementById('batsman-runs').value) || 0,
+    balls: parseInt(document.getElementById('batsman-balls').value) || 0,
+    fours: parseInt(document.getElementById('batsman-fours').value) || 0,
+    sixes: parseInt(document.getElementById('batsman-sixes').value) || 0,
+    status: document.getElementById('batsman-status').value,
+    dismissal_info: document.getElementById('batsman-dismissal').value
+  };
+
+  try {
+    const url = editId 
+      ? `/api/matches/${currentAdminScorecardMatchId}/scorecard/batsman/${editId}`
+      : `/api/matches/${currentAdminScorecardMatchId}/scorecard/batsman`;
+    
+    const res = await fetch(url, {
+      method: editId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+
+    if (res.ok) {
+      cancelBatsmanForm();
+      await loadAdminScorecard(currentAdminScorecardMatchId);
+    }
+  } catch (error) {
+    console.error('Failed to save batsman:', error);
+  }
+}
+
+async function deleteBatsman(batsmanId) {
+  if (!confirm('Delete this batsman?')) return;
+  if (!currentAdminScorecardMatchId) return;
+
+  try {
+    const res = await fetch(`/api/matches/${currentAdminScorecardMatchId}/scorecard/batsman/${batsmanId}`, {
+      method: 'DELETE'
+    });
+    if (res.ok) {
+      await loadAdminScorecard(currentAdminScorecardMatchId);
+    } else {
+      const data = await res.json();
+      alert(data.error || 'Failed to delete batsman');
+    }
+  } catch (error) {
+    console.error('Failed to delete batsman:', error);
+    alert('Failed to delete batsman. Server may be unavailable.');
+  }
+}
+
+// Bowler form
+function openAddBowlerForm() {
+  document.getElementById('bowler-edit-id').value = '';
+  document.getElementById('bowler-name').value = '';
+  document.getElementById('bowler-overs').value = '0';
+  document.getElementById('bowler-maidens').value = '0';
+  document.getElementById('bowler-runs').value = '0';
+  document.getElementById('bowler-wickets').value = '0';
+  document.getElementById('bowler-form-container').classList.remove('hidden');
+}
+
+function cancelBowlerForm() {
+  document.getElementById('bowler-form-container').classList.add('hidden');
+}
+
+function editBowler(bowlerId) {
+  if (!scorecardData) return;
+  
+  const opposingTeamData = currentAdminScorecardTab === 'team1' ? scorecardData.team2 : scorecardData.team1;
+  const bowler = opposingTeamData.bowlers.find(b => b.id === bowlerId);
+  if (!bowler) return;
+
+  document.getElementById('bowler-edit-id').value = bowler.id;
+  document.getElementById('bowler-name').value = bowler.player_name;
+  document.getElementById('bowler-overs').value = bowler.overs;
+  document.getElementById('bowler-maidens').value = bowler.maidens;
+  document.getElementById('bowler-runs').value = bowler.runs_conceded;
+  document.getElementById('bowler-wickets').value = bowler.wickets;
+  document.getElementById('bowler-form-container').classList.remove('hidden');
+}
+
+async function saveBowler(e) {
+  e.preventDefault();
+  if (!currentAdminScorecardMatchId) return;
+
+  const editId = document.getElementById('bowler-edit-id').value;
+  const match = matches.find(m => m.id === currentAdminScorecardMatchId);
+  if (!match) return;
+
+  // Bowlers belong to the opposing team
+  const teamName = currentAdminScorecardTab === 'team1' ? match.team2_name : match.team1_name;
+  const data = {
+    team_name: teamName,
+    player_name: document.getElementById('bowler-name').value,
+    overs: parseFloat(document.getElementById('bowler-overs').value) || 0,
+    maidens: parseInt(document.getElementById('bowler-maidens').value) || 0,
+    runs_conceded: parseInt(document.getElementById('bowler-runs').value) || 0,
+    wickets: parseInt(document.getElementById('bowler-wickets').value) || 0
+  };
+
+  try {
+    const url = editId
+      ? `/api/matches/${currentAdminScorecardMatchId}/scorecard/bowler/${editId}`
+      : `/api/matches/${currentAdminScorecardMatchId}/scorecard/bowler`;
+
+    const res = await fetch(url, {
+      method: editId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+
+    if (res.ok) {
+      cancelBowlerForm();
+      await loadAdminScorecard(currentAdminScorecardMatchId);
+    }
+  } catch (error) {
+    console.error('Failed to save bowler:', error);
+  }
+}
+
+async function deleteBowler(bowlerId) {
+  if (!confirm('Delete this bowler?')) return;
+  if (!currentAdminScorecardMatchId) return;
+
+  try {
+    const res = await fetch(`/api/matches/${currentAdminScorecardMatchId}/scorecard/bowler/${bowlerId}`, {
+      method: 'DELETE'
+    });
+    if (res.ok) {
+      await loadAdminScorecard(currentAdminScorecardMatchId);
+    } else {
+      const data = await res.json();
+      alert(data.error || 'Failed to delete bowler');
+    }
+  } catch (error) {
+    console.error('Failed to delete bowler:', error);
+    alert('Failed to delete bowler. Server may be unavailable.');
+  }
+}
+
 // Make functions globally available
 window.openEditModal = openEditModal;
 window.closeEditModal = closeEditModal;
@@ -849,3 +1324,19 @@ window.deleteCapture = deleteCapture;
 window.openPreviewModal = openPreviewModal;
 window.closePreviewModal = closePreviewModal;
 window.navigatePreview = navigatePreview;
+window.openScorecardModal = openScorecardModal;
+window.closeScorecardModal = closeScorecardModal;
+window.switchScorecardTab = switchScorecardTab;
+window.openAdminScorecardModal = openAdminScorecardModal;
+window.closeAdminScorecardModal = closeAdminScorecardModal;
+window.switchAdminScorecardTab = switchAdminScorecardTab;
+window.openAddBatsmanForm = openAddBatsmanForm;
+window.cancelBatsmanForm = cancelBatsmanForm;
+window.editBatsman = editBatsman;
+window.saveBatsman = saveBatsman;
+window.deleteBatsman = deleteBatsman;
+window.openAddBowlerForm = openAddBowlerForm;
+window.cancelBowlerForm = cancelBowlerForm;
+window.editBowler = editBowler;
+window.saveBowler = saveBowler;
+window.deleteBowler = deleteBowler;
