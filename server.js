@@ -205,11 +205,11 @@ const requireAdmin = (req, res, next) => {
 // Camera stream URLs
 let cameraConfig = {
   raspberryPi: {
-    url: 'http://raspberrypi.local:8080/stream',
+    url: 'http://192.168.1.11:5000/',
     enabled: true
   },
   esp32: {
-    url: 'http://192.168.1.9:81/stream',
+    url: 'http://192.168.1.13:81/stream',
     enabled: true
   }
 };
@@ -462,7 +462,7 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
       const streamUrl = new URL(cameraConfig.esp32.url);
       snapshotUrl = `${streamUrl.protocol}//${streamUrl.hostname}/capture`;
     } catch (e) {
-      snapshotUrl = 'http://192.168.1.9/capture';
+      snapshotUrl = 'http://192.168.1.13/capture';
     }
   } else if (camera === 'raspberrypi' && cameraConfig.raspberryPi.enabled) {
     snapshotUrl = cameraConfig.raspberryPi.url.replace('/stream', '/snapshot');

@@ -12,6 +12,7 @@ let currentScorecardTab = 'team1';
 let currentAdminScorecardMatchId = null;
 let currentAdminScorecardTab = 'team1';
 let scorecardData = null;
+let esp32PollingInterval = null;
 
 // Socket.IO connection
 const socket = io();
@@ -21,6 +22,7 @@ const navbar = document.getElementById('navbar');
 const authPage = document.getElementById('auth-page');
 const dashboardPage = document.getElementById('dashboard-page');
 const liveStreamPage = document.getElementById('live-stream-page');
+const lbwDetectionPage = document.getElementById('lbw-detection-page');
 const adminPage = document.getElementById('admin-page');
 
 // Initialize
@@ -52,6 +54,7 @@ function showAuth() {
   navbar.classList.add('hidden');
   dashboardPage.classList.add('hidden');
   liveStreamPage.classList.add('hidden');
+  lbwDetectionPage.classList.add('hidden');
   adminPage.classList.add('hidden');
 }
 
@@ -308,7 +311,14 @@ function showPage(page) {
   // Hide all pages
   dashboardPage.classList.add('hidden');
   liveStreamPage.classList.add('hidden');
+  lbwDetectionPage.classList.add('hidden');
   adminPage.classList.add('hidden');
+
+  // Stop ESP32 polling when leaving live stream page
+  if (page !== 'live-stream' && esp32PollingInterval) {
+    clearInterval(esp32PollingInterval);
+    esp32PollingInterval = null;
+  }
 
   // Show selected page
   switch (page) {
@@ -319,6 +329,10 @@ function showPage(page) {
       liveStreamPage.classList.remove('hidden');
       initCameraStreams();
       loadCaptures();
+      break;
+    case 'lbw-detection':
+      lbwDetectionPage.classList.remove('hidden');
+      initLBWIframe();
       break;
     case 'admin':
       if (currentUser.role === 'admin') {
@@ -521,62 +535,95 @@ function initCameraStreams() {
 }
 
 function updateCameraStreams() {
-  // Raspberry Pi stream
-  const rpiStream = document.getElementById('rpi-stream');
-  const rpiStatus = document.getElementById('rpi-status');
-  const rpiOffline = document.getElementById('rpi-offline');
-  const rpiUrlInput = document.getElementById('rpi-url');
+  // LBW Detection iframe (replaces Raspberry Pi stream)
+  const lbwIframe = document.getElementById('lbw-preview-iframe');
+  const lbwStatus = document.getElementById('lbw-status');
+  const lbwOffline = document.getElementById('lbw-offline');
+  const lbwUrlInput = document.getElementById('lbw-url');
   
   if (cameraConfig.raspberryPi) {
-    if (rpiUrlInput) rpiUrlInput.value = cameraConfig.raspberryPi.url;
+    if (lbwUrlInput) lbwUrlInput.value = cameraConfig.raspberryPi.url;
     
     if (cameraConfig.raspberryPi.enabled && cameraConfig.raspberryPi.url) {
-      rpiStream.src = cameraConfig.raspberryPi.url;
-      rpiStream.onload = () => {
-        rpiStatus.textContent = 'Online';
-        rpiStatus.className = 'status-badge status-live';
-        rpiOffline.classList.add('hidden');
+      lbwIframe.src = cameraConfig.raspberryPi.url;
+      lbwOffline.classList.add('hidden');
+      lbwIframe.onload = () => {
+        lbwStatus.textContent = 'Online';
+        lbwStatus.className = 'status-badge status-live';
+        lbwOffline.classList.add('hidden');
       };
-      rpiStream.onerror = () => {
-        rpiStatus.textContent = 'Offline';
-        rpiStatus.className = 'status-badge status-upcoming';
-        rpiOffline.classList.remove('hidden');
+      lbwIframe.onerror = () => {
+        lbwStatus.textContent = 'Offline';
+        lbwStatus.className = 'status-badge status-upcoming';
+        lbwOffline.classList.remove('hidden');
       };
+      // Timeout fallback: assume loaded for cross-origin iframes
+      setTimeout(() => {
+        if (lbwStatus.textContent === 'Connecting...') {
+          lbwStatus.textContent = 'Online';
+          lbwStatus.className = 'status-badge status-live';
+          lbwOffline.classList.add('hidden');
+        }
+      }, 5000);
     } else {
-      rpiOffline.classList.remove('hidden');
-      rpiStatus.textContent = 'Disabled';
+      lbwOffline.classList.remove('hidden');
+      lbwStatus.textContent = 'Disabled';
     }
   }
   
-  // ESP32 stream - MJPEG stream is at port 81
+  // ESP32 stream - use snapshot polling to avoid MJPEG single-client limitation
   const esp32Stream = document.getElementById('esp32-stream');
   const esp32Status = document.getElementById('esp32-status');
   const esp32Offline = document.getElementById('esp32-offline');
   const esp32UrlInput = document.getElementById('esp32-url');
   
+  // Stop any existing polling
+  if (esp32PollingInterval) {
+    clearInterval(esp32PollingInterval);
+    esp32PollingInterval = null;
+  }
+  
   if (cameraConfig.esp32) {
     if (esp32UrlInput) esp32UrlInput.value = cameraConfig.esp32.url;
     
     if (cameraConfig.esp32.enabled && cameraConfig.esp32.url) {
-      esp32Stream.src = cameraConfig.esp32.url;
-      esp32Stream.onload = () => {
-        esp32Status.textContent = 'Online';
-        esp32Status.className = 'status-badge status-live';
-        esp32Offline.classList.add('hidden');
-      };
-      esp32Stream.onerror = () => {
-        esp32Status.textContent = 'Offline';
-        esp32Status.className = 'status-badge status-upcoming';
-        rpiOffline.classList.remove('hidden');
-      };
-      // For MJPEG streams, the onload may not fire, so check after timeout
-      setTimeout(() => {
-        if (esp32Stream.complete || esp32Stream.naturalWidth > 0) {
-          esp32Status.textContent = 'Streaming';
-          esp32Status.className = 'status-badge status-live';
-          esp32Offline.classList.add('hidden');
-        }
-      }, 3000);
+      // Derive snapshot URL from stream URL (replace :81/stream with /capture)
+      let snapshotUrl;
+      try {
+        const streamUrl = new URL(cameraConfig.esp32.url);
+        snapshotUrl = `${streamUrl.protocol}//${streamUrl.hostname}/capture`;
+      } catch (e) {
+        snapshotUrl = 'http://192.168.1.13/capture';
+      }
+      
+      let frameLoaded = false;
+      
+      function fetchFrame() {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          esp32Stream.src = img.src;
+          if (!frameLoaded) {
+            frameLoaded = true;
+            esp32Status.textContent = 'Streaming';
+            esp32Status.className = 'status-badge status-live';
+            esp32Offline.classList.add('hidden');
+          }
+        };
+        img.onerror = () => {
+          if (!frameLoaded) {
+            esp32Status.textContent = 'Offline';
+            esp32Status.className = 'status-badge status-upcoming';
+            esp32Offline.classList.remove('hidden');
+          }
+        };
+        img.src = snapshotUrl + '?t=' + Date.now();
+      }
+      
+      // Fetch first frame immediately
+      fetchFrame();
+      // Then poll every 500ms (~2 FPS)
+      esp32PollingInterval = setInterval(fetchFrame, 500);
     } else {
       esp32Offline.classList.remove('hidden');
       esp32Status.textContent = 'Disabled';
@@ -586,7 +633,7 @@ function updateCameraStreams() {
 
 async function updateCameraConfig(camera) {
   const urlInput = camera === 'raspberryPi' 
-    ? document.getElementById('rpi-url')
+    ? document.getElementById('lbw-url')
     : document.getElementById('esp32-url');
   
   const update = {
@@ -602,6 +649,39 @@ async function updateCameraConfig(camera) {
   } catch (error) {
     console.error('Failed to update camera config:', error);
   }
+}
+
+// LBW Detection functions
+function initLBWIframe() {
+  const iframe = document.getElementById('lbw-full-iframe');
+  const status = document.getElementById('lbw-full-status');
+  const offline = document.getElementById('lbw-full-offline');
+  
+  if (cameraConfig.raspberryPi && cameraConfig.raspberryPi.enabled && cameraConfig.raspberryPi.url) {
+    iframe.src = cameraConfig.raspberryPi.url;
+    offline.classList.add('hidden');
+    iframe.onload = () => {
+      status.textContent = 'Online';
+      status.className = 'status-badge status-live';
+      offline.classList.add('hidden');
+    };
+    // Timeout fallback for cross-origin iframes
+    setTimeout(() => {
+      if (status.textContent === 'Connecting...') {
+        status.textContent = 'Online';
+        status.className = 'status-badge status-live';
+        offline.classList.add('hidden');
+      }
+    }, 5000);
+  } else {
+    offline.classList.remove('hidden');
+    status.textContent = 'Disabled';
+    status.className = 'status-badge';
+  }
+}
+
+function openFullLBW() {
+  showPage('lbw-detection');
 }
 
 // Capture functions
@@ -767,7 +847,7 @@ function renderCaptures(captures) {
       }
       <div class="capture-info">
         <div class="capture-details">
-          <div>${capture.source === 'raspberry_pi' ? 'Raspberry Pi' : 'ESP32'}</div>
+          <div>${capture.source === 'raspberry_pi' ? 'LBW Detection' : 'ESP32'}</div>
           <div>${new Date(capture.created_at).toLocaleString()}</div>
         </div>
         ${isAdmin ? `<button class="capture-delete" onclick="event.stopPropagation(); deleteCapture('${capture.id}')">Delete</button>` : ''}
@@ -813,7 +893,7 @@ function showPreview() {
   }
   
   document.getElementById('preview-source').textContent = 
-    capture.source === 'raspberry_pi' ? 'Raspberry Pi' : 'ESP32';
+    capture.source === 'raspberry_pi' ? 'LBW Detection' : 'ESP32';
   document.getElementById('preview-date').textContent = 
     new Date(capture.created_at).toLocaleString();
   document.getElementById('preview-counter').textContent = 
@@ -1340,3 +1420,5 @@ window.cancelBowlerForm = cancelBowlerForm;
 window.editBowler = editBowler;
 window.saveBowler = saveBowler;
 window.deleteBowler = deleteBowler;
+window.openFullLBW = openFullLBW;
+window.initLBWIframe = initLBWIframe;

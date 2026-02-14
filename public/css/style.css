@@ -1527,3 +1527,81 @@ body {
   padding-top: 0.8rem;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
+
+/* ============ LBW DETECTION STYLES ============ */
+
+.lbw-container {
+  max-width: 100%;
+  padding: 2rem;
+}
+
+.lbw-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.lbw-header h2 {
+  margin-bottom: 0;
+}
+
+.lbw-iframe-wrapper {
+  position: relative;
+  background: #000;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: var(--shadow), var(--shadow-glow);
+  border: 1px solid rgba(0, 200, 83, 0.2);
+}
+
+.lbw-iframe {
+  width: 100%;
+  height: 85vh;
+  min-height: 600px;
+  border: none;
+  display: block;
+}
+
+/* Preview iframe in Live Streams card */
+.lbw-preview-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.lbw-open-full {
+  width: 100%;
+  text-align: center;
+  padding: 0.8rem 1.5rem;
+  cursor: pointer;
+  color: var(--white);
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+  border: none;
+  border-radius: 0;
+  transition: all 0.3s ease;
+}
+
+.lbw-open-full:hover {
+  background: linear-gradient(135deg, var(--primary), var(--success));
+  transform: none;
+  box-shadow: none;
+}
+
+@media (max-width: 768px) {
+  .lbw-iframe {
+    height: 70vh;
+    min-height: 400px;
+  }
+
+  .lbw-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+}

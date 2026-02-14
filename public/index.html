@@ -13,6 +13,7 @@
     <div class="nav-links">
       <a href="#" data-page="dashboard" class="nav-link active">Dashboard</a>
       <a href="#" data-page="live-stream" class="nav-link">Live Streams</a>
+      <a href="#" data-page="lbw-detection" class="nav-link">LBW Detection</a>
       <a href="#" data-page="admin" class="nav-link admin-only hidden">Admin Panel</a>
       <span id="user-info"></span>
       <button id="logout-btn" class="btn btn-outline">Logout</button>
@@ -100,25 +101,22 @@
       <h2>Live Camera Streams</h2>
       
       <div class="streams-grid">
-        <!-- Raspberry Pi Camera -->
+        <!-- LBW Detection -->
         <div class="stream-card">
           <div class="stream-header">
-            <h3>Raspberry Pi Camera</h3>
-            <span id="rpi-status" class="status-badge">Connecting...</span>
+            <h3>LBW Detection</h3>
+            <span id="lbw-status" class="status-badge">Connecting...</span>
           </div>
           <div class="stream-container">
-            <img id="rpi-stream" class="stream-video" alt="Raspberry Pi Stream">
-            <div id="rpi-offline" class="stream-offline">
-              <span>Camera Offline</span>
+            <iframe id="lbw-preview-iframe" class="lbw-preview-iframe" src="" allowfullscreen></iframe>
+            <div id="lbw-offline" class="stream-offline">
+              <span>LBW System Offline</span>
               <p>Check if Raspberry Pi is connected</p>
             </div>
           </div>
-          <div class="stream-controls admin-only hidden">
-            <button class="btn btn-capture" data-source="raspberry_pi" data-action="photo">
-              Capture Photo
-            </button>
-            <button class="btn btn-capture btn-record" data-source="raspberry_pi" data-action="video">
-              Start Recording
+          <div class="stream-controls">
+            <button class="btn btn-primary btn-full lbw-open-full" onclick="openFullLBW()">
+              Open Full View
             </button>
           </div>
         </div>
@@ -152,13 +150,13 @@
         <h3>Camera Configuration</h3>
         <div class="config-grid">
           <div class="config-card">
-            <h4>Raspberry Pi Stream URL</h4>
-            <input type="text" id="rpi-url" class="config-input" placeholder="http://raspberrypi.local:8080/stream">
+            <h4>LBW Detection URL</h4>
+            <input type="text" id="lbw-url" class="config-input" placeholder="http://192.168.1.11:5000/">
             <button class="btn btn-sm" onclick="updateCameraConfig('raspberryPi')">Update</button>
           </div>
           <div class="config-card">
             <h4>ESP32 Stream URL</h4>
-            <input type="text" id="esp32-url" class="config-input" placeholder="http://esp32.local:81/stream">
+            <input type="text" id="esp32-url" class="config-input" placeholder="http://192.168.1.13:81/stream">
             <button class="btn btn-sm" onclick="updateCameraConfig('esp32')">Update</button>
           </div>
         </div>
@@ -168,6 +166,23 @@
       <div id="captures-section">
         <h3>Captured Media</h3>
         <div id="captures-gallery" class="captures-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LBW Detection Page -->
+  <div id="lbw-detection-page" class="page hidden">
+    <div class="container lbw-container">
+      <div class="lbw-header">
+        <h2>LBW Detection System</h2>
+        <span id="lbw-full-status" class="status-badge">Connecting...</span>
+      </div>
+      <div class="lbw-iframe-wrapper">
+        <iframe id="lbw-full-iframe" class="lbw-iframe" src="" allowfullscreen></iframe>
+        <div id="lbw-full-offline" class="stream-offline">
+          <span>LBW System Offline</span>
+          <p>Check Raspberry Pi connection at 192.168.1.11:5000</p>
+        </div>
       </div>
     </div>
   </div>
