@@ -759,26 +759,36 @@ function toggleVideoRecording(btn, source) {
     }
     
     // Create video from captured frames
-    if (window.recordedFrames && window.recordedFrames.length > 0) {
+    if (window.recordedFrames && window.recordedFrames.length > 1) {
       createVideoFromFrames(window.recordedFrames, source);
-      window.recordedFrames = [];
+    } else if (window.recordedFrames && window.recordedFrames.length === 1) {
+      saveCapture(window.recordedFrames[0], source, 'photo');
+      alert('Only 1 frame captured. Saved as photo.');
     } else {
-      alert('No frames captured');
+      alert('No frames captured. Make sure camera is streaming.');
     }
+    window.recordedFrames = [];
   } else {
-    // Start recording - capture frames every 200ms
+    // Start recording
     btn.dataset.recording = 'true';
     btn.textContent = 'Stop Recording';
     btn.classList.add('btn-danger');
     
     window.recordedFrames = [];
+    let captureCount = 0;
     
     const captureFrame = async () => {
       try {
+        // Use server proxy to get snapshot (avoids CORS issues)
         const res = await fetch(`/api/snapshot/${cameraType}`);
         if (res.ok) {
           const blob = await res.blob();
-          window.recordedFrames.push(blob);
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            window.recordedFrames.push(reader.result);
+            captureCount++;
+          };
+          reader.readAsDataURL(blob);
         }
       } catch (e) {
         console.error('Frame capture error:', e);
@@ -788,36 +798,108 @@ function toggleVideoRecording(btn, source) {
     // Capture first frame immediately
     captureFrame();
     
-    // Then capture every 200ms (5 fps)
-    window.recordingInterval = setInterval(captureFrame, 200);
+    // Capture at ~3 fps (every 333ms) - slower to avoid overwhelming server
+    window.recordingInterval = setInterval(captureFrame, 333);
     
-    alert('Recording started. Click "Stop Recording" when done.');
+    alert('Recording started! Click "Stop Recording" when done. (Max 10 seconds, ~30 frames)');
+    
+    // Auto-stop after 10 seconds
+    setTimeout(() => {
+      if (btn.dataset.recording === 'true') {
+        btn.click();
+      }
+    }, 10000);
   }
 }
 
 async function createVideoFromFrames(frames, source) {
-  if (frames.length === 0) {
-    alert('No frames to save');
+  if (frames.length < 2) {
+    alert('Not enough frames to create video');
     return;
   }
   
-  // For simplicity, save as a GIF-like sequence or just save all frames
-  // Since creating actual video in browser is complex, we'll save the last frame as photo
-  // and notify user about the limitation
+  alert(`Processing ${frames.length} frames into video...`);
   
   try {
-    // Convert the last frame to base64 and save
-    const lastFrame = frames[frames.length - 1];
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      // Save as video placeholder (actually saving representative frame)
-      await saveCapture(reader.result, source, 'photo');
-      alert(`Captured ${frames.length} frames! Saved as photo. (Video encoding requires server-side processing)`);
+    // Create video using canvas and MediaRecorder
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Load first frame to get dimensions
+    const img = new Image();
+    img.src = frames[0];
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+    
+    canvas.width = img.width || 640;
+    canvas.height = img.height || 480;
+    
+    // Create MediaRecorder from canvas stream
+    const stream = canvas.captureStream(10);
+    const mediaRecorder = new MediaRecorder(stream, { 
+      mimeType: 'video/webm;codecs=vp8'
+    });
+    const chunks = [];
+    
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
     };
-    reader.readAsDataURL(lastFrame);
+    
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        try {
+          const res = await fetch('/api/capture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              imageData: reader.result, 
+              source, 
+              type: 'video' 
+            })
+          });
+          if (res.ok) {
+            loadCaptures();
+            alert(`Video saved successfully! (${frames.length} frames)`);
+          } else {
+            throw new Error('Save failed');
+          }
+        } catch (err) {
+          console.error('Save error:', err);
+          alert('Failed to save video');
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+    
+    mediaRecorder.start();
+    
+    // Play all frames onto canvas
+    for (let i = 0; i < frames.length; i++) {
+      const frameImg = new Image();
+      frameImg.src = frames[i];
+      await new Promise(resolve => {
+        frameImg.onload = () => {
+          ctx.drawImage(frameImg, 0, 0, canvas.width, canvas.height);
+          resolve();
+        };
+        frameImg.onerror = resolve;
+      });
+      await new Promise(resolve => setTimeout(resolve, 100)); // ~10fps playback
+    }
+    
+    // Stop recorder after small delay
+    await new Promise(resolve => setTimeout(resolve, 200));
+    mediaRecorder.stop();
+    
   } catch (error) {
-    console.error('Failed to create video:', error);
-    alert('Failed to save recording');
+    console.error('Video creation failed:', error);
+    // Fallback: save last frame as photo
+    await saveCapture(frames[frames.length - 1], source, 'photo');
+    alert(`Video encoding failed. Saved last frame as photo. (${frames.length} frames captured)`);
   }
 }
 

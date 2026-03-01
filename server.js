@@ -460,15 +460,20 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
   if (camera === 'esp32' && cameraConfig.esp32.enabled) {
     try {
       const streamUrl = new URL(cameraConfig.esp32.url);
+      // ESP32 capture is on port 80 (web server), not port 81 (stream server)
       snapshotUrl = `${streamUrl.protocol}//${streamUrl.hostname}/capture`;
     } catch (e) {
       snapshotUrl = 'http://192.168.1.13/capture';
     }
   } else if (camera === 'raspberrypi' && cameraConfig.raspberryPi.enabled) {
-    snapshotUrl = cameraConfig.raspberryPi.url.replace('/stream', '/snapshot');
+    // LBW detection - capture current frame from video feed
+    const lbwUrl = cameraConfig.raspberryPi.url;
+    snapshotUrl = lbwUrl.replace(/\/$/, '') + '/video_feed';
   } else {
     return res.status(404).json({ error: 'Camera not found or disabled' });
   }
+
+  console.log(`Snapshot request for ${camera}: ${snapshotUrl}`);
 
   try {
     const parsedUrl = new URL(snapshotUrl);
@@ -480,21 +485,45 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
       timeout: 5000
     };
     
+    console.log(`Connecting to: ${options.hostname}:${options.port}${options.path}`);
+    
     const proxyReq = http.request(options, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, {
-        'Content-Type': proxyRes.headers['content-type'] || 'image/jpeg',
-        'Cache-Control': 'no-cache'
-      });
-      proxyRes.pipe(res);
+      // For MJPEG stream (LBW), extract first frame
+      if (camera === 'raspberrypi') {
+        let buffer = Buffer.alloc(0);
+        proxyRes.on('data', (chunk) => {
+          buffer = Buffer.concat([buffer, chunk]);
+          // Look for JPEG end marker
+          const start = buffer.indexOf(Buffer.from([0xff, 0xd8]));
+          const end = buffer.indexOf(Buffer.from([0xff, 0xd9]), start);
+          if (start !== -1 && end !== -1) {
+            const jpeg = buffer.slice(start, end + 2);
+            res.writeHead(200, {
+              'Content-Type': 'image/jpeg',
+              'Cache-Control': 'no-cache'
+            });
+            res.end(jpeg);
+            proxyReq.destroy();
+          }
+        });
+      } else {
+        res.writeHead(proxyRes.statusCode, {
+          'Content-Type': proxyRes.headers['content-type'] || 'image/jpeg',
+          'Cache-Control': 'no-cache'
+        });
+        proxyRes.pipe(res);
+      }
     });
 
     proxyReq.on('error', (err) => {
+      console.error(`Snapshot error: ${err.message}`);
       if (!res.headersSent) {
         res.status(503).json({ error: 'Camera snapshot unavailable' });
       }
     });
     
     proxyReq.on('timeout', () => {
+      console.error('Snapshot timeout');
       proxyReq.destroy();
       if (!res.headersSent) {
         res.status(503).json({ error: 'Camera snapshot timeout' });
@@ -503,6 +532,7 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
 
     proxyReq.end();
   } catch (error) {
+    console.error(`Snapshot exception: ${error.message}`);
     res.status(503).json({ error: 'Failed to capture snapshot' });
   }
 });
