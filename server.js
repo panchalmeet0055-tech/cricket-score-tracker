@@ -471,7 +471,16 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
   }
 
   try {
-    const proxyReq = http.request(snapshotUrl, (proxyRes) => {
+    const parsedUrl = new URL(snapshotUrl);
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 80,
+      path: parsedUrl.pathname,
+      method: 'GET',
+      timeout: 5000
+    };
+    
+    const proxyReq = http.request(options, (proxyRes) => {
       res.writeHead(proxyRes.statusCode, {
         'Content-Type': proxyRes.headers['content-type'] || 'image/jpeg',
         'Cache-Control': 'no-cache'
@@ -482,6 +491,13 @@ app.get('/api/snapshot/:camera', requireAuth, async (req, res) => {
     proxyReq.on('error', (err) => {
       if (!res.headersSent) {
         res.status(503).json({ error: 'Camera snapshot unavailable' });
+      }
+    });
+    
+    proxyReq.on('timeout', () => {
+      proxyReq.destroy();
+      if (!res.headersSent) {
+        res.status(503).json({ error: 'Camera snapshot timeout' });
       }
     });
 

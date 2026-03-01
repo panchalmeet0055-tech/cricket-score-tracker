@@ -598,32 +598,56 @@ function updateCameraStreams() {
       
       let frameLoaded = false;
       
-      function fetchFrame() {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-          esp32Stream.src = img.src;
-          if (!frameLoaded) {
-            frameLoaded = true;
-            esp32Status.textContent = 'Streaming';
-            esp32Status.className = 'status-badge status-live';
-            esp32Offline.classList.add('hidden');
-          }
-        };
-        img.onerror = () => {
-          if (!frameLoaded) {
-            esp32Status.textContent = 'Offline';
-            esp32Status.className = 'status-badge status-upcoming';
-            esp32Offline.classList.remove('hidden');
-          }
-        };
-        img.src = snapshotUrl + '?t=' + Date.now();
-      }
+      // Try direct MJPEG stream first (works if ESP32 supports multiple clients)
+      esp32Stream.src = cameraConfig.esp32.url;
+      esp32Stream.onload = () => {
+        frameLoaded = true;
+        esp32Status.textContent = 'Streaming';
+        esp32Status.className = 'status-badge status-live';
+        esp32Offline.classList.add('hidden');
+      };
+      esp32Stream.onerror = () => {
+        // MJPEG failed, fall back to snapshot polling
+        if (!frameLoaded) {
+          startSnapshotPolling();
+        }
+      };
+      // For MJPEG streams, onload may not fire - check after timeout
+      setTimeout(() => {
+        if (esp32Stream.complete || esp32Stream.naturalWidth > 0) {
+          frameLoaded = true;
+          esp32Status.textContent = 'Streaming';
+          esp32Status.className = 'status-badge status-live';
+          esp32Offline.classList.add('hidden');
+        } else if (!frameLoaded) {
+          startSnapshotPolling();
+        }
+      }, 4000);
       
-      // Fetch first frame immediately
-      fetchFrame();
-      // Then poll every 500ms (~2 FPS)
-      esp32PollingInterval = setInterval(fetchFrame, 500);
+      function startSnapshotPolling() {
+        function fetchFrame() {
+          const img = new Image();
+          img.onload = () => {
+            esp32Stream.src = img.src;
+            if (!frameLoaded) {
+              frameLoaded = true;
+              esp32Status.textContent = 'Streaming';
+              esp32Status.className = 'status-badge status-live';
+              esp32Offline.classList.add('hidden');
+            }
+          };
+          img.onerror = () => {
+            if (!frameLoaded) {
+              esp32Status.textContent = 'Offline';
+              esp32Status.className = 'status-badge status-upcoming';
+              esp32Offline.classList.remove('hidden');
+            }
+          };
+          img.src = snapshotUrl + '?t=' + Date.now();
+        }
+        fetchFrame();
+        esp32PollingInterval = setInterval(fetchFrame, 500);
+      }
     } else {
       esp32Offline.classList.remove('hidden');
       esp32Status.textContent = 'Disabled';
