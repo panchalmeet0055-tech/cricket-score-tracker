@@ -709,43 +709,72 @@ function openFullLBW() {
 }
 
 // Capture functions
+function isLocalhost() {
+  return window.location.hostname === 'localhost' || 
+         window.location.hostname === '127.0.0.1' ||
+         window.location.hostname.startsWith('192.168.') ||
+         window.location.hostname.startsWith('10.');
+}
+
 async function capturePhoto(source) {
   const cameraType = source === 'raspberry_pi' ? 'raspberrypi' : 'esp32';
+  const streamEl = document.getElementById('esp32-stream');
   
+  // First try canvas capture from displayed stream (works if image is loaded)
   try {
-    // Try to get snapshot from server proxy
-    const res = await fetch(`/api/snapshot/${cameraType}`);
-    if (res.ok) {
-      const blob = await res.blob();
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        saveCapture(reader.result, source, 'photo');
-      };
-      reader.readAsDataURL(blob);
-    } else {
-      // Fallback: capture from displayed stream
-      const streamEl = source === 'raspberry_pi' 
-        ? document.getElementById('rpi-stream')
-        : document.getElementById('esp32-stream');
-      
+    if (streamEl && streamEl.complete && streamEl.naturalWidth > 0) {
       const canvas = document.createElement('canvas');
       canvas.width = streamEl.naturalWidth || 640;
       canvas.height = streamEl.naturalHeight || 480;
-      
       const ctx = canvas.getContext('2d');
       ctx.drawImage(streamEl, 0, 0, canvas.width, canvas.height);
-      
       const imageData = canvas.toDataURL('image/jpeg', 0.9);
-      saveCapture(imageData, source, 'photo');
+      
+      // Check if canvas was tainted (CORS)
+      if (imageData && imageData.length > 100) {
+        saveCapture(imageData, source, 'photo');
+        return;
+      }
     }
-  } catch (error) {
-    console.error('Capture failed:', error);
-    alert('Failed to capture photo. Make sure camera is online.');
+  } catch (canvasError) {
+    console.log('Canvas capture failed (CORS), trying server proxy...');
+  }
+  
+  // Try server proxy (only works on localhost)
+  try {
+    const res = await fetch(`/api/snapshot/${cameraType}`);
+    if (res.ok) {
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('image')) {
+        const blob = await res.blob();
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          saveCapture(reader.result, source, 'photo');
+        };
+        reader.readAsDataURL(blob);
+        return;
+      }
+    }
+  } catch (proxyError) {
+    console.error('Server proxy failed:', proxyError);
+  }
+  
+  // Both methods failed
+  if (!isLocalhost()) {
+    alert('Capture requires running locally.\n\nThe deployed server cannot access cameras on your local network.\n\nTo capture photos/videos:\n1. Run "npm start" on your PC\n2. Open http://localhost:3000\n3. Capture from there');
+  } else {
+    alert('Failed to capture photo. Make sure camera is online and streaming.');
   }
 }
 
 function toggleVideoRecording(btn, source) {
   const cameraType = source === 'raspberry_pi' ? 'raspberrypi' : 'esp32';
+  
+  // Check if we can capture on deployed version
+  if (!isLocalhost()) {
+    alert('Video recording requires running locally.\n\nThe deployed server cannot access cameras on your local network.\n\nTo record videos:\n1. Run "npm start" on your PC\n2. Open http://localhost:3000\n3. Record from there');
+    return;
+  }
   
   if (btn.dataset.recording === 'true') {
     // Stop recording
